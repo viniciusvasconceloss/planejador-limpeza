@@ -13,9 +13,9 @@ ESCALA_MAX = 3.0
 
 
 def _layout(fig: go.Figure, altura: int = 420) -> go.Figure:
-    fig.update_layout(height=altura, margin=dict(l=10, r=10, t=80, b=10),
+    fig.update_layout(height=altura, margin=dict(l=10, r=10, t=50, b=10),
                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title_text=""))
+                      legend=dict(orientation="h", yanchor="top", y=-0.12, x=0, title_text=""))
     return fig
 
 
