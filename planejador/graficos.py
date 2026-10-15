@@ -1,73 +1,111 @@
-"""Gráficos Plotly do app."""
+"""Gráficos Plotly do app. Todas as cores de tarefa vêm de CORES, para os gráficos
+de turnos e de plano falarem a mesma língua."""
 from __future__ import annotations
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
-# Paleta: azul = coberto com folga, cinza = no limite (100%), vermelho = alerta estourado.
-AZUL, CINZA, VERMELHO, VERMELHO_ESCURO = "#3987e5", "#f0efec", "#e66767", "#a3201f"
-CORES_TAREFA = {"limpeza": "#2a78d6", "lavação": "#1baf7a", "checagem": "#eda100",
-                "deslocamento": "#c3c2b7", "intervalo": "#e8e7e3"}
+# limpeza roxo, lavação laranja, checagem rosa (validadas juntas: separáveis inclusive para daltonismo)
+CORES = {
+    "limpeza": "#6a4fd6",
+    "lavação": "#f07a1a",
+    "checagem": "#e05ca8",
+    "deslocamento": "#d9d7d0",
+    "intervalo": "#f1f0ec",
+}
+TEXTO, TEXTO_2, GRADE = "#2b2a28", "#6b6a65", "#ecebe7"
+FONTE = "Source Sans Pro, Inter, system-ui, sans-serif"
+
+# mapa de calor "fogo": amarelo bem claro em 0, laranja forte e vermelho no máximo
+FOGO = [[0.0, "#fffbe8"], [0.2, "#fff0b8"], [1 / 3, "#ffd166"], [0.5, "#fb9b35"],
+        [0.75, "#ea5a1f"], [1.0, "#b51d14"]]
 ESCALA_MAX = 3.0
+DIA_BASE = pd.Timestamp("2026-01-01")
 
 
-def _layout(fig: go.Figure, altura: int = 420) -> go.Figure:
-    fig.update_layout(height=altura, margin=dict(l=10, r=10, t=50, b=10),
-                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", yanchor="top", y=-0.12, x=0, title_text=""))
+def _estilo(fig: go.Figure, titulo: str, altura: int, legenda: bool = True) -> go.Figure:
+    fig.update_layout(
+        height=altura,
+        title=dict(text=titulo, x=0, xanchor="left", font=dict(size=16, color=TEXTO, family=FONTE)),
+        font=dict(family=FONTE, size=13, color=TEXTO_2),
+        margin=dict(l=8, r=8, t=56, b=8),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=legenda,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=1, xanchor="right",
+                    title_text="", font=dict(size=12), bgcolor="rgba(0,0,0,0)"),
+        hoverlabel=dict(bgcolor="white", bordercolor=GRADE, font=dict(family=FONTE, size=13, color=TEXTO)),
+    )
+    fig.update_xaxes(showline=False, ticks="", gridcolor=GRADE, zeroline=False)
+    fig.update_yaxes(showline=False, ticks="", gridcolor=GRADE, zeroline=False)
     return fig
 
 
+def _hhmm(m: int) -> str:
+    m = int(m) % (24 * 60)
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
 def mapa_calor(mapa: pd.DataFrame, titulo: str) -> go.Figure:
-    """Banheiro x hora; valor = pior necessidade da hora (0 a 3, acima de 1 é alerta estourado)."""
+    """Banheiro x hora; valor = pior necessidade da hora em limpezas (1 = bateu o alerta)."""
     z = mapa.values
-    texto = [[f"{v:.1f}".replace(".", ",") if v >= 1.05 else "" for v in linha] for linha in z]
     fig = go.Figure(go.Heatmap(
         z=z, x=list(mapa.columns), y=list(mapa.index), zmin=0, zmax=ESCALA_MAX,
-        # 1,0 = cinza; já em 1,2 fica vermelho claro, para o atraso aparecer cedo
-        colorscale=[[0, AZUL], [1 / ESCALA_MAX, CINZA], [1.25 / ESCALA_MAX, VERMELHO], [1, VERMELHO_ESCURO]],
-        text=texto, texttemplate="%{text}", textfont=dict(size=11),
-        xgap=2, ygap=2,
-        colorbar=dict(title="limpezas<br>devidas", tickvals=[0, 1, 2, 3], ticktext=["0", "1 (alerta)", "2", "3+"]),
-        hovertemplate="%{y}<br>%{x}<br>pior necessidade na hora: %{z:.0%}<extra></extra>",
+        colorscale=FOGO, xgap=3, ygap=3,
+        colorbar=dict(title=dict(text="limpezas", side="top"), tickvals=[0, 1, 2, 3],
+                      ticktext=["0", "1 · alerta", "2", "3+"], thickness=12, len=0.9, outlinewidth=0),
+        hovertemplate="<b>%{y}</b><br>%{x}<br>%{z:.1f} limpezas<extra></extra>",
     ))
-    fig.update_yaxes(autorange="reversed")
-    fig.update_layout(title=titulo)
-    return _layout(fig, altura=max(320, 34 * len(mapa) + 120))
+    # números só onde passou do alerta; texto claro nas células escuras
+    for r, banheiro in enumerate(mapa.index):
+        for c, hora in enumerate(mapa.columns):
+            v = z[r, c]
+            if v >= 1.05:
+                fig.add_annotation(x=hora, y=banheiro, text=f"{v:.1f}".replace(".", ","), showarrow=False,
+                                   font=dict(size=11, color="white" if v >= 1.8 else TEXTO))
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    fig.update_xaxes(showgrid=False)
+    return _estilo(fig, titulo, max(320, 38 * len(mapa) + 110), legenda=False)
 
 
 def capacidade_carga(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
-    for col, cor in (("limpeza", CORES_TAREFA["limpeza"]), ("lavação", CORES_TAREFA["lavação"]),
-                     ("checagem", CORES_TAREFA["checagem"])):
-        fig.add_bar(x=df.hora, y=df[col], name=f"carga: {col}", marker_color=cor,
-                    hovertemplate="%{x}<br>" + col + ": %{y:.0f} min<extra></extra>")
-    fig.add_scatter(x=df.hora, y=df.capacidade, name="capacidade da equipe", mode="lines+markers",
-                    line=dict(color="#0b0b0b", width=2, shape="hv"), marker=dict(size=8),
-                    hovertemplate="%{x}<br>capacidade: %{y:.0f} min<extra></extra>")
-    fig.update_layout(barmode="stack", bargap=0.15, title="Capacidade x carga por hora (minutos de trabalho)")
-    fig.update_yaxes(title="minutos", gridcolor="rgba(128,128,128,0.15)")
-    return _layout(fig)
+    for col in ("limpeza", "lavação", "checagem"):
+        if df[col].sum() == 0:
+            continue
+        fig.add_bar(x=df.hora, y=df[col], name=col, marker=dict(color=CORES[col], line=dict(width=0)),
+                    hovertemplate=f"{col}: %{{y:.0f}} min<extra></extra>")
+    fig.add_scatter(x=df.hora, y=df.capacidade, name="capacidade da equipe", mode="lines",
+                    line=dict(color=TEXTO, width=2, dash="dot", shape="hv"),
+                    hovertemplate="capacidade: %{y:.0f} min<extra></extra>")
+    fig.update_layout(barmode="stack", bargap=0.35, barcornerradius=4, hovermode="x unified")
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(title=dict(text="minutos de trabalho", font=dict(size=12)), rangemode="tozero")
+    return _estilo(fig, "Capacidade da equipe x carga de trabalho, por hora", 380)
 
 
-def limpeza_ideal(df: pd.DataFrame) -> go.Figure:
-    longo = df.melt(id_vars="banheiro", value_vars=["original", "ajustada"], var_name="alerta", value_name="limpezas/dia")
-    fig = px.bar(longo, x="banheiro", y="limpezas/dia", color="alerta", barmode="group",
-                 color_discrete_map={"original": "#c3c2b7", "ajustada": "#2a78d6"},
-                 title="Limpeza ideal por dia (fluxo médio / alerta)")
-    fig.update_traces(hovertemplate="%{x}<br>%{y:.1f} limpezas/dia<extra></extra>")
-    return _layout(fig)
-
-
-def gantt(tarefas: pd.DataFrame, base: str = "2026-01-01") -> go.Figure:
-    t = tarefas.copy()
-    t["Início"] = pd.Timestamp(base) + pd.to_timedelta(t.inicio, unit="m")
-    t["Fim"] = pd.Timestamp(base) + pd.to_timedelta(t.fim, unit="m")
-    t["banheiro"] = t["banheiro"].fillna("")
-    fig = px.timeline(t, x_start="Início", x_end="Fim", y="colaborador", color="tipo",
-                      color_discrete_map=CORES_TAREFA, hover_data={"banheiro": True, "tipo": True})
-    fig.update_yaxes(autorange="reversed", title=None)
-    fig.update_xaxes(tickformat="%H:%M", title=None)
-    fig.update_layout(legend_title_text="")
-    return _layout(fig, altura=max(300, 40 * t.colaborador.nunique() + 120))
+def linha_do_tempo(t: pd.DataFrame, eixo: str, titulo: str, tipos: list[str],
+                   ordem: list[str] | None = None, altura_linha: int = 34) -> go.Figure:
+    """Barras horizontais no tempo. eixo = coluna das linhas (banheiro ou colaborador)."""
+    t = t[t.tipo.isin(tipos)].copy()
+    linhas = ordem or list(dict.fromkeys(t[eixo].dropna()))
+    fig = go.Figure()
+    for tipo in tipos:
+        p = t[t.tipo == tipo]
+        if p.empty:
+            continue
+        ini, fim = p.inicio.astype(int), p.fim.astype(int)
+        rotulo = (p.colaborador if eixo == "banheiro" else p.banheiro).fillna("").astype(str)
+        fig.add_bar(
+            y=p[eixo], x=(fim - ini).values * 60_000,
+            base=(DIA_BASE + pd.to_timedelta(ini.values, unit="m")).strftime("%Y-%m-%d %H:%M"),
+            orientation="h", name=tipo,
+            width=0.36 if tipo == "deslocamento" else 0.7,
+            marker=dict(color=CORES[tipo], line=dict(color="white", width=1),
+                        pattern=dict(shape="/", fgcolor="#cfccc4", size=6) if tipo == "intervalo" else None),
+            customdata=list(zip(ini.map(_hhmm), fim.map(_hhmm), rotulo)),
+            hovertemplate=f"<b>{tipo}</b> %{{customdata[0]}}–%{{customdata[1]}}<br>%{{customdata[2]}}<extra></extra>",
+        )
+    fig.update_layout(barmode="overlay", barcornerradius=3)
+    fig.update_xaxes(type="date", tickformat="%H:%M", dtick=3_600_000, gridcolor=GRADE)
+    fig.update_yaxes(categoryorder="array", categoryarray=linhas, autorange="reversed", showgrid=False)
+    return _estilo(fig, titulo, max(300, altura_linha * len(linhas) + 110))

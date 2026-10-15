@@ -98,40 +98,41 @@ st.title("Planejador de Limpeza")
 aba_alertas, aba_turnos, aba_plano = st.tabs(["Alertas", "Turnos", "Plano de limpeza"])
 
 # ---------------------------------------------------------------- aba alertas
+fluxo_dia = perfil.sum()
+
 with aba_alertas:
-    st.subheader("Alertas por banheiro")
-    st.caption("Limpeza ideal = fluxo médio diário / alerta: quantos alertas apareceriam no dia sem nenhuma limpeza.")
+    numeros = st.container()
+    st.caption("Limpeza ideal = fluxo médio do dia / alerta. É quantas vezes o banheiro bateria o alerta "
+               "num dia sem nenhuma limpeza.")
     if st.button("Restaurar alertas originais"):
         for i in ids:
             st.session_state[f"alerta::{i}"] = int(alerta_original[i])
     for predio, grupo in banheiros.groupby("building", sort=True):
-        with st.expander(predio, expanded=True):
-            cols = st.columns(2)
-            for n, i in enumerate(grupo["id"]):
-                orig = int(alerta_original[i])
-                cols[n % 2].slider(nome[i], 1, max(100, orig * 3), key=f"alerta::{i}",
-                                   help=f"Alerta original: {orig}")
+        st.markdown(f"#### {predio}")
+        for _, b in grupo.iterrows():
+            i = b["id"]
+            orig = int(alerta_original[i])
+            with st.container(border=True):
+                c_nome, c_fluxo, c_slider, c_ideal = st.columns([2.2, 1.1, 4, 1.4], vertical_alignment="center")
+                c_nome.markdown(f"**{b['asset']}**  \n:gray[{b['floor']} · {predio}]")
+                c_fluxo.metric("Fluxo médio/dia", f"{fluxo_dia[i]:,.0f}".replace(",", "."))
+                valor = c_slider.slider("Alerta", 1, max(100, orig * 3), key=f"alerta::{i}",
+                                        help=f"Alerta original: {orig}")
+                ideal = fluxo_dia[i] / valor
+                c_ideal.metric("Limpeza ideal", f"≈ {ideal:.1f}".replace(".", ","),
+                               delta=(f"{ideal - fluxo_dia[i] / orig:+.1f} vs. original".replace(".", ",")
+                                      if valor != orig else None), delta_color="off")
 
 alertas = pd.Series({i: float(st.session_state[f"alerta::{i}"]) for i in ids})
 
-with aba_alertas:
-    fluxo_dia = perfil.sum()
-    tabela = pd.DataFrame({
-        "banheiro": [nome[i] for i in ids],
-        "fluxo médio/dia": fluxo_dia.round(0).values,
-        "alerta original": alerta_original.values.astype(int),
-        "alerta": alertas.values.astype(int),
-        "original": (fluxo_dia / alerta_original).round(1).values,
-        "ajustada": (fluxo_dia / alertas).round(1).values,
-    })
+with numeros:
+    ideal_total, ideal_orig = (fluxo_dia / alertas).sum(), (fluxo_dia / alerta_original).sum()
     c1, c2, c3 = st.columns(3)
     c1.metric("Banheiros", len(ids))
-    c2.metric("Limpeza ideal total/dia", f"{tabela['ajustada'].sum():.0f}",
-              delta=f"{tabela['ajustada'].sum() - tabela['original'].sum():+.0f} vs. original", delta_color="off")
+    c2.metric("Limpeza ideal total/dia", f"{ideal_total:.0f}",
+              delta=f"{ideal_total - ideal_orig:+.0f} vs. original" if round(ideal_total) != round(ideal_orig) else None,
+              delta_color="off")
     c3.metric("Fluxo médio/dia", f"{fluxo_dia.sum():,.0f}".replace(",", "."))
-    st.plotly_chart(graficos.limpeza_ideal(tabela), width="stretch")
-    st.dataframe(tabela.rename(columns={"original": "limpeza ideal (original)", "ajustada": "limpeza ideal"}),
-                 hide_index=True, width="stretch")
 
 # ---------------------------------------------------------------- aba turnos
 with aba_turnos:
@@ -218,7 +219,7 @@ with aba_turnos:
         c[0].markdown(f"**{r['turno']}**  \n{int(r['colaboradores'])} colaboradores")
         c[1].metric("Limpezas", int(r["limpezas"]))
         c[2].metric("Lavações", int(r["lavações"]))
-        c[3].metric("Atendidos acima de 100%", int(r["atrasos"]))
+        c[3].metric("Acima do alerta", int(r["atrasos"]))
         c[4].metric("Pior necessidade", pct(r["pico"]))
         c[5].metric("Ocupação da equipe", pct(r["ocupação"]))
     if res.lavacoes_pendentes:
@@ -229,33 +230,40 @@ with aba_turnos:
     visao = st.radio("Mapa de calor", ["Com o plano", "Sem nenhuma limpeza (tela em branco)"], horizontal=True)
     base = res if visao == "Com o plano" else sem_limpeza
     mapa = indicadores.mapa_necessidade(base).rename(index=nome)
-    st.plotly_chart(graficos.mapa_calor(
-        mapa, "Necessidade por banheiro e hora: 1 = bateu o alerta, 2 = duas limpezas devidas"),
-        width="stretch")
-    st.caption("Azul: banheiro com folga. Cinza: perto de 100%. Vermelho: passou do alerta e ninguém foi ainda "
-               "(1,2 = era para ter sido feita 1,2 limpeza).")
+    st.plotly_chart(graficos.mapa_calor(mapa, "Limpezas acumuladas por banheiro e hora"), width="stretch")
+    st.caption("Cada célula é o pior momento daquela hora. 1 = bateu o alerta. Os números aparecem quando passou: "
+               "1,2 quer dizer que já era para ter sido feita 1,2 limpeza e ninguém foi.")
     st.plotly_chart(graficos.capacidade_carga(indicadores.capacidade_carga(res, cen, perfil, alertas)),
                     width="stretch")
 
 # ---------------------------------------------------------------- aba plano
 with aba_plano:
-    st.subheader("Plano geral")
-    rb = indicadores.resumo_banheiros(res, perfil, alertas).rename(index=nome)
-    st.dataframe(rb.style.format({"limpeza ideal": "{:.1f}", "pico": "{:.0%}", "cobertura": "{:.0%}"}),
-                 width="stretch")
+    t = res.tarefas.copy()
+    servico = t[t.tipo.isin(["limpeza", "lavação", "checagem"])]
+    cont = servico.groupby(["banheiro", "tipo"]).size().unstack(fill_value=0)
 
-    t = res.tarefas
-    atend = t[t.tipo.isin(["limpeza", "lavação", "checagem"])].copy()
-    atend["hora"] = (atend.inicio // 60 * 60).map(indicadores.hhmm)
-    atend["sigla"] = atend.tipo.map({"limpeza": "L", "lavação": "Lv", "checagem": "C"})
-    grade = atend.pivot_table(index="banheiro", columns="hora", values="sigla", aggfunc=" ".join)
-    horas = [indicadores.hhmm(h * 60) for h in range(res.inicio // 60, -(-res.fim // 60))]
-    grade = grade.reindex(index=ids, columns=horas).fillna("").rename(index=nome)
-    st.markdown("**Intervenções por banheiro e hora** (L = limpeza, Lv = lavação, C = checagem)")
-    st.dataframe(grade, width="stretch")
+    st.subheader("Plano geral")
+    c = st.columns(4)
+    c[0].metric("Limpezas", int((servico.tipo == "limpeza").sum()))
+    c[1].metric("Lavações", int((servico.tipo == "lavação").sum()))
+    c[2].metric("Checagens", int((servico.tipo == "checagem").sum()))
+    c[3].metric("Limpeza ideal no período", f"{indicadores.resumo_banheiros(res, perfil, alertas)['limpeza ideal'].sum():.0f}")
+
+    def rotulo(i):
+        partes = [f"{int(cont.loc[i, k])} {k}" for k in ("limpeza", "lavação", "checagem")
+                  if i in cont.index and k in cont and cont.loc[i, k]]
+        return f"{nome[i]}<br><span style='font-size:11px'>{' · '.join(partes) or 'sem intervenção'}</span>"
+
+    rotulos = {i: rotulo(i) for i in ids}
+    st.plotly_chart(graficos.linha_do_tempo(
+        servico.assign(banheiro=servico.banheiro.map(rotulos)), "banheiro",
+        "Intervenções em cada banheiro ao longo do dia", ["limpeza", "lavação", "checagem"],
+        ordem=[rotulos[i] for i in ids], altura_linha=44), width="stretch")
 
     st.subheader("Plano por colaborador")
-    st.plotly_chart(graficos.gantt(t.assign(banheiro=t.banheiro.map(nome))), width="stretch")
+    st.plotly_chart(graficos.linha_do_tempo(
+        t.assign(banheiro=t.banheiro.map(nome)), "colaborador", "Roteiro de cada colaborador",
+        ["intervalo", "deslocamento", "limpeza", "lavação", "checagem"]), width="stretch")
     colabs = list(dict.fromkeys(t.colaborador))
     if colabs:
         quem = st.selectbox("Colaborador", colabs)
