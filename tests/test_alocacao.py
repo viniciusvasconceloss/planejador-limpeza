@@ -69,3 +69,13 @@ def test_grupos_so_atendem_seus_banheiros():
     t = t[t.tipo == "limpeza"]
     for g, b in (("G1", "B1"), ("G2", "B2")):
         assert set(t[t.grupo == g].banheiro) == {b}
+
+
+def test_antecipa_quando_varios_banheiros_batem_100_juntos():
+    # três banheiros iguais batem 100% no mesmo minuto: esperar até a última hora atrasa dois deles
+    p = perfil_constante({f"B{i}": 30 for i in range(3)})
+    a = pd.Series({f"B{i}": 30.0 for i in range(3)})
+    atrasos = lambda r: (r.tarefas.necessidade_chegada > 1).sum()
+    so_na_hora = planejar(p, a, cenario(1), antecipar=False)
+    com_antecipacao = planejar(p, a, cenario(1))
+    assert atrasos(com_antecipacao) < atrasos(so_na_hora)
