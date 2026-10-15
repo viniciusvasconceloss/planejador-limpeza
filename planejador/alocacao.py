@@ -76,6 +76,11 @@ def criar_colaboradores(cen: Cenario, ids: list[str]) -> list[Colaborador]:
     return out
 
 
+def cabe(c: Colaborador, ini: int, fim: int) -> bool:
+    """A tarefa termina dentro do turno e não invade o intervalo."""
+    return fim <= c.fim and not (c.pausa_ini >= 0 and ini < c.pausa_ini < fim)
+
+
 def planejar(perfil: pd.DataFrame, alertas: pd.Series, cen: Cenario) -> Resultado:
     """perfil: fluxo médio por hora (0..23) x banheiro. alertas: alerta por banheiro (mesmos ids)."""
     ids = list(perfil.columns)
@@ -125,7 +130,7 @@ def planejar(perfil: pd.DataFrame, alertas: pd.Series, cen: Cenario) -> Resultad
             j = next((x for x in chk_pend if x[0] <= m and disp[x[1]]), None)
             if j is not None:
                 fim = m + d.deslocamento + d.checagem
-                if fim > c.fim:
+                if not cabe(c, m, fim):
                     continue
                 chk_pend.remove(j)
                 i = j[1]
@@ -157,7 +162,7 @@ def planejar(perfil: pd.DataFrame, alertas: pd.Series, cen: Cenario) -> Resultad
 
             dur = d.lavacao if tipo == "lavação" else d.limpeza
             fim = m + d.deslocamento + dur
-            if fim > c.fim:
+            if not cabe(c, m, fim):
                 continue
             kc = min(chegada, K)
             n_cheg = (CUM[kc, i] - base[i]) / A[i]

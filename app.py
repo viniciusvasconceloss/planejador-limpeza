@@ -107,21 +107,28 @@ with aba_alertas:
     if st.button("Restaurar alertas originais"):
         for i in ids:
             st.session_state[f"alerta::{i}"] = int(alerta_original[i])
-    for predio, grupo in banheiros.groupby("building", sort=True):
-        st.markdown(f"#### {predio}")
-        for _, b in grupo.iterrows():
-            i = b["id"]
-            orig = int(alerta_original[i])
-            with st.container(border=True):
-                c_nome, c_fluxo, c_slider, c_ideal = st.columns([2.2, 1.1, 4, 1.4], vertical_alignment="center")
-                c_nome.markdown(f"**{b['asset']}**  \n:gray[{b['floor']} · {predio}]")
-                c_fluxo.metric("Fluxo médio/dia", f"{fluxo_dia[i]:,.0f}".replace(",", "."))
-                valor = c_slider.slider("Alerta", 1, max(100, orig * 3), key=f"alerta::{i}",
-                                        help=f"Alerta original: {orig}")
-                ideal = fluxo_dia[i] / valor
-                c_ideal.metric("Limpeza ideal", f"≈ {ideal:.1f}".replace(".", ","),
-                               delta=(f"{ideal - fluxo_dia[i] / orig:+.1f} vs. original".replace(".", ",")
-                                      if valor != orig else None), delta_color="off")
+    st.html("<style>.st-key-alertas [data-testid='stSlider']{padding:0}"
+            ".st-key-alertas [data-testid='stHorizontalBlock']{gap:.75rem}</style>")
+    # com muitos banheiros, cada prédio começa recolhido para não virar uma rolagem sem fim
+    recolher = len(ids) > 15
+    LARG = [2.6, 1.1, 4, 1.4]
+    with st.container(key="alertas"):
+        for predio, grupo in banheiros.groupby("building", sort=True):
+            with st.expander(f"**{predio}** · {len(grupo)} banheiros", expanded=not recolher):
+                cab = st.columns(LARG)
+                for col, txt in zip(cab, ["Banheiro", "Fluxo médio/dia", "Alerta", "Limpeza ideal/dia"]):
+                    col.caption(txt)
+                for _, b in grupo.iterrows():
+                    i = b["id"]
+                    orig = int(alerta_original[i])
+                    c_nome, c_fluxo, c_slider, c_ideal = st.columns(LARG, vertical_alignment="center")
+                    c_nome.markdown(f"**{b['asset']}** :gray[· {b['floor']}]")
+                    c_fluxo.markdown(f"{fluxo_dia[i]:,.0f}".replace(",", "."))
+                    valor = c_slider.slider("Alerta", 1, max(100, orig * 3), key=f"alerta::{i}",
+                                            label_visibility="collapsed", help=f"Alerta original: {orig}")
+                    ideal = fluxo_dia[i] / valor
+                    dif = "" if valor == orig else f" :gray[({ideal - fluxo_dia[i] / orig:+.1f})]"
+                    c_ideal.markdown(f"**≈ {ideal:.1f}**{dif}".replace(".", ","))
 
 alertas = pd.Series({i: float(st.session_state[f"alerta::{i}"]) for i in ids})
 
@@ -148,19 +155,20 @@ with aba_turnos:
     padrao = [("Manhã", time(6), time(14), 4, time(10)), ("Tarde", time(14), time(22), 4, time(17)),
               ("Noite", time(22), time(6), 1, time(2)), ("Madrugada", time(2), time(6), 1, None)]
     turnos: list[Turno] = []
-    cols = st.columns(int(n_turnos))
     for k in range(int(n_turnos)):
+        if k % 2 == 0:  # no máximo dois turnos por linha; o terceiro e o quarto vão para baixo
+            linha = st.columns(2)
         nm, ini, fim, n, pausa = padrao[k]
-        with cols[k].container(border=True):
-            nm = st.text_input("Nome", nm, key=f"t{k}_nome")
-            a, b = st.columns(2)
-            ini = a.time_input("Início", ini, key=f"t{k}_ini", step=1800)
-            fim = b.time_input("Fim", fim, key=f"t{k}_fim", step=1800)
+        with linha[k % 2].container(border=True):
+            a, b, c = st.columns([2, 1, 1])
+            nm = a.text_input("Turno", nm, key=f"t{k}_nome")
+            ini = b.time_input("Início", ini, key=f"t{k}_ini", step=1800)
+            fim = c.time_input("Fim", fim, key=f"t{k}_fim", step=1800)
             n = st.slider("Colaboradores", 0, 20, n, key=f"t{k}_n", disabled=usar_grupos)
-            tem_pausa = st.checkbox("Tem intervalo", pausa is not None, key=f"t{k}_tp")
-            a, b = st.columns(2)
-            p_ini = a.time_input("Intervalo às", pausa or time(12), key=f"t{k}_pi", step=1800, disabled=not tem_pausa)
-            p_dur = b.number_input("Duração (min)", 15, 180, 60, step=15, key=f"t{k}_pd", disabled=not tem_pausa)
+            a, b, c = st.columns([2, 1, 1], vertical_alignment="bottom")
+            tem_pausa = a.checkbox("Tem intervalo", pausa is not None, key=f"t{k}_tp")
+            p_ini = b.time_input("Intervalo às", pausa or time(12), key=f"t{k}_pi", step=1800, disabled=not tem_pausa)
+            p_dur = c.number_input("Duração (min)", 15, 180, 60, step=15, key=f"t{k}_pd", disabled=not tem_pausa)
             i_min, f_min = minutos(ini), minutos(fim)
             if turnos and i_min < turnos[0].inicio:  # turno depois da meia-noite: dia operacional continua
                 i_min += 24 * 60
@@ -190,17 +198,19 @@ with aba_turnos:
         a, b = st.columns(2)
         with a:
             lav_on = st.toggle("Lavações", True)
-            lav_ini = st.time_input("Começam às", time(17), step=1800, disabled=not lav_on)
-            maiores = list(fluxo_dia.sort_values(ascending=False).index[:5])
-            lav_b = st.multiselect("Banheiros com lavação (1 por dia)", ids, default=maiores,
-                                   format_func=nome.get, disabled=not lav_on)
+            lav_ini = st.time_input("Começam às", time(6), step=1800, disabled=not lav_on)
+            lav_todos = st.checkbox("Todos os banheiros", True, key="lav_todos", disabled=not lav_on)
+            lav_b = ids if lav_todos else st.multiselect(
+                "Banheiros com lavação (1 por dia)", ids, default=list(fluxo_dia.sort_values(ascending=False).index[:5]),
+                format_func=nome.get, disabled=not lav_on)
         with b:
             chk_on = st.toggle("Checagens", False)
             opcoes = [time(h, m) for h in range(24) for m in (0, 30)]
             chk_h = st.multiselect("Horários", opcoes, default=[time(10), time(16)],
                                    format_func=lambda t: t.strftime("%H:%M"), disabled=not chk_on)
-            chk_b = st.multiselect("Banheiros com checagem", ids, default=ids[:2],
-                                   format_func=nome.get, disabled=not chk_on)
+            chk_todos = st.checkbox("Todos os banheiros", False, key="chk_todos", disabled=not chk_on)
+            chk_b = ids if chk_todos else st.multiselect(
+                "Banheiros com checagem", ids, default=ids[:2], format_func=nome.get, disabled=not chk_on)
 
     cen = Cenario(
         turnos=turnos, duracoes=dur, intervalo_escalonado=modo_int.startswith("Escalonado"),
@@ -255,15 +265,15 @@ with aba_plano:
         return f"{nome[i]}<br><span style='font-size:11px'>{' · '.join(partes) or 'sem intervenção'}</span>"
 
     rotulos = {i: rotulo(i) for i in ids}
-    st.plotly_chart(graficos.linha_do_tempo(
+    st.plotly_chart(graficos.grade_15min(
         servico.assign(banheiro=servico.banheiro.map(rotulos)), "banheiro",
-        "Intervenções em cada banheiro ao longo do dia", ["limpeza", "lavação", "checagem"],
-        ordem=[rotulos[i] for i in ids], altura_linha=44), width="stretch")
+        "Intervenções em cada banheiro, em blocos de 15 minutos", res.inicio, res.fim,
+        ordem=[rotulos[i] for i in ids], altura_linha=40), width="stretch")
 
     st.subheader("Plano por colaborador")
-    st.plotly_chart(graficos.linha_do_tempo(
-        t.assign(banheiro=t.banheiro.map(nome)), "colaborador", "Roteiro de cada colaborador",
-        ["intervalo", "deslocamento", "limpeza", "lavação", "checagem"]), width="stretch")
+    st.plotly_chart(graficos.grade_15min(
+        t.assign(banheiro=t.banheiro.map(nome)), "colaborador",
+        "Roteiro de cada colaborador, em blocos de 15 minutos", res.inicio, res.fim), width="stretch")
     colabs = list(dict.fromkeys(t.colaborador))
     if colabs:
         quem = st.selectbox("Colaborador", colabs)

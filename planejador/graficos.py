@@ -109,3 +109,67 @@ def linha_do_tempo(t: pd.DataFrame, eixo: str, titulo: str, tipos: list[str],
     fig.update_xaxes(type="date", tickformat="%H:%M", dtick=3_600_000, gridcolor=GRADE)
     fig.update_yaxes(categoryorder="array", categoryarray=linhas, autorange="reversed", showgrid=False)
     return _estilo(fig, titulo, max(300, altura_linha * len(linhas) + 110))
+
+
+GRADE_TIPOS = ["vazio", "intervalo", "limpeza", "lavação", "checagem"]
+GRADE_CORES = ["#f6f5f2", "#e2e0da", CORES["limpeza"], CORES["lavação"], CORES["checagem"]]
+
+
+def grade_15min(t: pd.DataFrame, eixo: str, titulo: str, inicio: int, fim: int,
+                ordem: list[str] | None = None, altura_linha: int = 34) -> go.Figure:
+    """Grade de blocos de 15 minutos: cada célula mostra o que a linha (banheiro ou colaborador)
+    está fazendo naquele bloco. Cada tarefa entra no bloco em que começa; o intervalo ocupa
+    todos os blocos que cobre. Deslocamento não aparece (fica dentro do bloco)."""
+    t = t[t.tipo.isin(GRADE_TIPOS)]
+    linhas = ordem or list(dict.fromkeys(t[eixo].dropna()))
+    s0 = inicio // 15 * 15
+    blocos = list(range(s0, fim, 15))
+    pos = {r: n for n, r in enumerate(linhas)}
+    z = [[0] * len(blocos) for _ in linhas]
+    dica = [[f"{_hhmm(b)}–{_hhmm(b + 15)}" for b in blocos] for _ in linhas]
+    outro = "colaborador" if eixo == "banheiro" else "banheiro"
+
+    def marcar(r, c, tipo, texto):
+        if 0 <= c < len(blocos):
+            if GRADE_TIPOS.index(tipo) >= z[r][c]:
+                z[r][c] = GRADE_TIPOS.index(tipo)
+            dica[r][c] += f"<br><b>{tipo}</b> {texto}"
+
+    for _, x in t.iterrows():
+        if x[eixo] not in pos:
+            continue
+        r = pos[x[eixo]]
+        texto = f"{_hhmm(x.inicio)}–{_hhmm(x.fim)}"
+        if isinstance(x.get(outro), str) and x[outro]:
+            texto += f" · {x[outro].split('<br>')[0]}"
+        if x.tipo == "intervalo":
+            for c in range((int(x.inicio) - s0) // 15, -(-(int(x.fim) - s0) // 15)):
+                if 0 <= c < len(blocos) and z[r][c] == 0:
+                    z[r][c] = 1
+                    dica[r][c] += f"<br><b>intervalo</b> {texto}"
+            continue
+        c0 = (int(x.inicio) - s0) // 15
+        for c in range(c0, c0 + max(1, round((x.fim - x.inicio) / 15))):
+            marcar(r, c, x.tipo, texto)
+
+    n = len(GRADE_TIPOS)
+    escala = []
+    for k, cor in enumerate(GRADE_CORES):
+        escala += [[k / n, cor], [(k + 1) / n, cor]]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=list(range(len(blocos))), y=linhas, zmin=-0.5, zmax=n - 0.5, colorscale=escala,
+        showscale=False, xgap=1, ygap=3, customdata=dica, hovertemplate="%{customdata}<extra></extra>",
+    ))
+    # linhas mais marcadas a cada hora
+    for c, b in enumerate(blocos):
+        if b % 60 == 0 and c:
+            fig.add_vline(x=c - 0.5, line=dict(color="#bdbab2", width=1))
+    for tipo in ("limpeza", "lavação", "checagem", "intervalo"):
+        if (t.tipo == tipo).any():
+            fig.add_scatter(x=[None], y=[None], mode="markers", name=tipo,
+                            marker=dict(symbol="square", size=12, color=GRADE_CORES[GRADE_TIPOS.index(tipo)]))
+    horas = [c for c, b in enumerate(blocos) if b % 60 == 0]
+    fig.update_xaxes(tickvals=horas, ticktext=[_hhmm(blocos[c]) for c in horas], showgrid=False,
+                     range=[-0.5, len(blocos) - 0.5])
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    return _estilo(fig, titulo, max(260, altura_linha * len(linhas) + 110))
