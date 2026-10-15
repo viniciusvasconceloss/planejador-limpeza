@@ -28,10 +28,10 @@ def pct(v: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def carregar(fluxo_bytes: bytes | None, alertas_bytes: bytes | None):
+def carregar(fluxo_bytes: bytes | None, alertas_bytes: bytes | None, exemplo: str):
     import io
-    f = io.BytesIO(fluxo_bytes) if fluxo_bytes else EXEMPLO / "fluxo_setembro_2026.csv"
-    a = io.BytesIO(alertas_bytes) if alertas_bytes else EXEMPLO / "alertas.csv"
+    f = io.BytesIO(fluxo_bytes) if fluxo_bytes else EXEMPLO / exemplo / "fluxo_setembro_2026.csv"
+    a = io.BytesIO(alertas_bytes) if alertas_bytes else EXEMPLO / exemplo / "alertas.csv"
     fluxo = dados.ler_fluxo(f)
     alertas = dados.ler_alertas(a)
     banheiros, sem_alerta, sem_fluxo = dados.cruzar(fluxo, alertas)
@@ -45,14 +45,18 @@ with st.sidebar:
     st.header("Dados")
     up_fluxo = st.file_uploader("CSV de fluxo", type="csv")
     up_alertas = st.file_uploader("CSV de alertas", type="csv")
+    exemplos = {"Movimento alto (~118 limpezas/dia)": "movimento_alto",
+                "Movimento moderado (~45 limpezas/dia)": "movimento_moderado"}
+    exemplo = st.selectbox("Dados de exemplo (quando não há upload)", list(exemplos), key="exemplo")
     try:
         fluxo, banheiros, faltas, sem_alerta, sem_fluxo = carregar(
-            up_fluxo.getvalue() if up_fluxo else None, up_alertas.getvalue() if up_alertas else None)
+            up_fluxo.getvalue() if up_fluxo else None, up_alertas.getvalue() if up_alertas else None,
+            exemplos[exemplo])
     except ValueError as e:
         st.error(str(e))
         st.stop()
     if not (up_fluxo and up_alertas):
-        st.caption("Usando os dados de exemplo (10 banheiros, setembro/2026).")
+        st.caption("Usando os dados de exemplo: 10 banheiros fictícios, setembro/2026.")
     if faltas:
         st.caption(f"{faltas} horas sem telemetria foram preenchidas com a média da mesma hora e dia da semana.")
     if sem_alerta:
@@ -147,12 +151,12 @@ with aba_turnos:
     c1, c2, c3 = st.columns(3)
     n_turnos = c1.number_input("Quantidade de turnos", 1, 4, 2)
     modo_int = c2.radio("Intervalo", ["Escalonado por grupo", "Fixo (todos param juntos)"], horizontal=True)
-    escalas = c3.number_input("Horários de intervalo diferentes", 1, 6, 3,
+    escalas = c3.number_input("Horários de intervalo diferentes", 1, 6, 2,
                               disabled=modo_int.startswith("Fixo"),
                               help="No escalonado, a equipe é dividida e cada parte para num horário seguido do outro.")
     usar_grupos = st.checkbox("Dividir em grupos (cada grupo atende só os seus banheiros)")
 
-    padrao = [("Manhã", time(6), time(14), 4, time(10)), ("Tarde", time(14), time(22), 4, time(17)),
+    padrao = [("Manhã", time(6), time(14), 4, time(12)), ("Tarde", time(14), time(22), 4, time(18)),
               ("Noite", time(22), time(6), 1, time(2)), ("Madrugada", time(2), time(6), 1, None)]
     turnos: list[Turno] = []
     for k in range(int(n_turnos)):
@@ -167,7 +171,7 @@ with aba_turnos:
             n = st.slider("Colaboradores", 0, 20, n, key=f"t{k}_n", disabled=usar_grupos)
             a, b, c = st.columns([2, 1, 1], vertical_alignment="bottom")
             tem_pausa = a.checkbox("Tem intervalo", pausa is not None, key=f"t{k}_tp")
-            p_ini = b.time_input("Intervalo às", pausa or time(12), key=f"t{k}_pi", step=1800, disabled=not tem_pausa)
+            p_ini = b.time_input("Almoço às", pausa or time(12), key=f"t{k}_pi", step=1800, disabled=not tem_pausa)
             p_dur = c.number_input("Duração (min)", 15, 180, 60, step=15, key=f"t{k}_pd", disabled=not tem_pausa)
             i_min, f_min = minutos(ini), minutos(fim)
             if turnos and i_min < turnos[0].inicio:  # turno depois da meia-noite: dia operacional continua
@@ -249,34 +253,45 @@ with aba_turnos:
 # ---------------------------------------------------------------- aba plano
 with aba_plano:
     t = res.tarefas.copy()
-    servico = t[t.tipo.isin(["limpeza", "lavação", "checagem"])]
-    cont = servico.groupby(["banheiro", "tipo"]).size().unstack(fill_value=0)
+    # nomes curtos: só o asset (o prédio entra quando o mesmo nome se repete) e o código antes do 1º espaço
+    repetidos = banheiros["asset"].duplicated(keep=False)
+    curto = dict(zip(banheiros["id"], banheiros["asset"].where(~repetidos, banheiros["asset"] + " · " + banheiros["building"])))
+    # código curto dentro da barra: os dígitos do 1º termo do nome (BWC-01 -> 01)
+    primeiro = banheiros["asset"].str.split().str[0]
+    codigo = dict(zip(banheiros["id"], primeiro.str.extract(r"(\d+)$")[0].fillna(primeiro.str[:4])))
 
-    st.subheader("Plano geral")
+    servico = t[t.tipo.isin(["limpeza", "lavação", "checagem"])]
     c = st.columns(4)
-    c[0].metric("Limpezas", int((servico.tipo == "limpeza").sum()))
+    c[0].metric("Limpezas no dia", int((servico.tipo == "limpeza").sum()))
     c[1].metric("Lavações", int((servico.tipo == "lavação").sum()))
     c[2].metric("Checagens", int((servico.tipo == "checagem").sum()))
     c[3].metric("Limpeza ideal no período", f"{indicadores.resumo_banheiros(res, perfil, alertas)['limpeza ideal'].sum():.0f}")
 
-    def rotulo(i):
-        partes = [f"{int(cont.loc[i, k])} {k}" for k in ("limpeza", "lavação", "checagem")
-                  if i in cont.index and k in cont and cont.loc[i, k]]
-        return f"{nome[i]}<br><span style='font-size:11px'>{' · '.join(partes) or 'sem intervenção'}</span>"
+    janelas = {tr.nome: (tr.inicio, tr.fim_abs) for tr in turnos if tr.fim_abs > tr.inicio}
+    janelas["Dia inteiro"] = (res.inicio, res.fim)
+    ver = st.segmented_control("Período", list(janelas), default=list(janelas)[0], key="periodo_plano") or list(janelas)[0]
+    ini_j, fim_j = janelas[ver]
 
-    rotulos = {i: rotulo(i) for i in ids}
-    st.plotly_chart(graficos.grade_15min(
-        servico.assign(banheiro=servico.banheiro.map(rotulos)), "banheiro",
-        "Intervenções em cada banheiro, em blocos de 15 minutos", res.inicio, res.fim,
-        ordem=[rotulos[i] for i in ids], altura_linha=40), width="stretch")
+    st.html(graficos.legenda_html(["limpeza", "lavação", "checagem", "intervalo"]))
+    st.subheader("Plano por banheiro")
+    no_periodo = servico[(servico.inicio >= ini_j) & (servico.inicio < fim_j)]
+    cont = no_periodo.groupby(["banheiro", "tipo"]).size().unstack(fill_value=0)
+    abrev = {"limpeza": "limp.", "lavação": "lav.", "checagem": "chec."}
+    resumo = {i: "  ·  ".join(f"{int(cont.loc[i, k])} {abrev[k]}" for k in abrev
+                               if i in cont.index and k in cont and cont.loc[i, k]) or "—" for i in ids}
+    st.plotly_chart(graficos.plano(
+        servico.assign(detalhe=servico.colaborador), "banheiro", ids,
+        f"O que acontece em cada banheiro · {ver.lower()} (C1, C2… = colaborador)", ini_j, fim_j, rotulo=curto,
+        texto=servico.colaborador.str.split(" · ").str[-1], resumo=resumo), width="stretch")
 
     st.subheader("Plano por colaborador")
-    st.plotly_chart(graficos.grade_15min(
-        t.assign(banheiro=t.banheiro.map(nome)), "colaborador",
-        "Roteiro de cada colaborador, em blocos de 15 minutos", res.inicio, res.fim), width="stretch")
-    colabs = list(dict.fromkeys(t.colaborador))
+    colabs = [c.id for c in res.colaboradores if ver == "Dia inteiro" or c.turno == ver]
+    st.plotly_chart(graficos.plano(
+        t.assign(detalhe=t.banheiro.map(nome)), "colaborador", colabs,
+        f"Roteiro de cada colaborador · {ver.lower()} (número = banheiro)", ini_j, fim_j,
+        texto=t.banheiro.map(codigo)), width="stretch")
     if colabs:
-        quem = st.selectbox("Colaborador", colabs)
+        quem = st.selectbox("Roteiro detalhado", colabs)
         rot = t[(t.colaborador == quem) & (t.tipo != "deslocamento")].sort_values("inicio")
         st.dataframe(pd.DataFrame({
             "início": rot.inicio.map(indicadores.hhmm), "fim": rot.fim.map(indicadores.hhmm),

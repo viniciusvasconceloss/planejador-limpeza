@@ -25,6 +25,7 @@ from .parametros import Cenario
 
 PASSO = 5  # minutos
 HORIZONTE = 90  # minutos à frente olhados para decidir se precisa antecipar
+MIN_ANTECIPAR = 0.5  # necessidade mínima para uma limpeza antecipada
 
 
 @dataclass
@@ -113,29 +114,32 @@ def planejar(perfil: pd.DataFrame, alertas: pd.Series, cen: Cenario, antecipar: 
     chk_pend = sorted((h, ids.index(b)) for h in chk.horarios for b in chk.banheiros if b in ids) if chk.ativa else []
 
     def vai_faltar_gente(c: Colaborador, m: int, disp: np.ndarray) -> bool:
-        """Simula a fila das próximas limpezas (prazo mais próximo primeiro) com a equipe do
-        mesmo turno e grupo, supondo que c espere mais um passo. True se alguém passaria de 100%."""
-        livres = []
-        for o in colabs:
-            if o.turno != c.turno or o.grupo != c.grupo or not (o.ini <= m < o.fim):
-                continue
-            f = m + PASSO if o is c else max(o.livre, m)
-            if o.pausa_ini <= f < o.pausa_fim:
-                f = o.pausa_fim
-            if f < o.fim:
-                livres.append(f)
-        if not livres:
-            return False
+        """Simula a fila das próximas limpezas (prazo mais próximo primeiro) com quem estará em
+        serviço nos próximos minutos (inclusive quem entra no turno seguinte), respeitando
+        intervalos e fim de turno, supondo que c espere mais um passo. True se alguém passaria de 100%."""
         limite = m + HORIZONTE
+        equipe = []
+        for o in colabs:
+            if o.grupo != c.grupo or o.fim <= m or o.ini > limite:
+                continue
+            f = m + PASSO if o is c else max(o.livre, m, o.ini)
+            equipe.append([f, o])
+
+        def ajustar(f, o):
+            return o.pausa_fim if o.pausa_ini <= f < o.pausa_fim else f
+
         ultimo_ok = t0 + (estouro - 1) * PASSO          # último minuto de chegada sem passar de 100%
         fila = sorted((ultimo_ok[i], i) for i in np.where(disp)[0] if ultimo_ok[i] <= limite)
         for prazo_i, _ in fila:
-            k = int(np.argmin(livres))
-            chegada = livres[k] + d.deslocamento
-            if chegada > prazo_i:
+            melhor = None
+            for e in equipe:
+                f = ajustar(e[0], e[1])
+                if cabe(e[1], f, f + d.deslocamento + d.limpeza) and (melhor is None or f < melhor[0]):
+                    melhor = (f, e)
+            if melhor is None or melhor[0] + d.deslocamento > prazo_i:
                 return True
             # na simulação o colaborador chega em cima do prazo (não antes) e segue
-            livres[k] = max(chegada, prazo_i - 0) + d.limpeza
+            melhor[1][0] = max(melhor[0] + d.deslocamento, prazo_i) + d.limpeza
         return False
 
     hist = np.zeros((K, N))
@@ -185,7 +189,8 @@ def planejar(perfil: pd.DataFrame, alertas: pd.Series, cen: Cenario, antecipar: 
                 if not cand.any():
                     if not (antecipar and vai_faltar_gente(c, m, disp)):
                         continue
-                    cand = disp & (estouro < K + 1)
+                    # antecipa quem já passou da metade do alerta, para não limpar banheiro recém-limpo
+                    cand = disp & (estouro < K + 1) & (np.maximum(0, CUM[k + 1] - base) / A >= MIN_ANTECIPAR)
                     if not cand.any():
                         continue
                 i = int(np.where(cand, estouro, 10**9).argmin())

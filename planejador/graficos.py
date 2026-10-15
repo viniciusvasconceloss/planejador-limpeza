@@ -83,93 +83,61 @@ def capacidade_carga(df: pd.DataFrame) -> go.Figure:
     return _estilo(fig, "Capacidade da equipe x carga de trabalho, por hora", 380)
 
 
-def linha_do_tempo(t: pd.DataFrame, eixo: str, titulo: str, tipos: list[str],
-                   ordem: list[str] | None = None, altura_linha: int = 34) -> go.Figure:
-    """Barras horizontais no tempo. eixo = coluna das linhas (banheiro ou colaborador)."""
-    t = t[t.tipo.isin(tipos)].copy()
-    linhas = ordem or list(dict.fromkeys(t[eixo].dropna()))
+def plano(t: pd.DataFrame, eixo: str, linhas: list[str], titulo: str, inicio: int, fim: int,
+          rotulo: dict[str, str] | None = None, texto: pd.Series | None = None,
+          resumo: dict[str, str] | None = None) -> go.Figure:
+    """Linha do tempo de um turno: uma linha por banheiro ou colaborador, cada tarefa no horário real.
+    Grade fina a cada 15 minutos e mais marcada a cada hora. `texto` vai dentro das barras quando cabe;
+    `resumo` aparece à direita de cada linha."""
+    rotulo = rotulo or {}
+    t = t[(t.fim > inicio) & (t.inicio < fim) & t[eixo].isin(linhas)].copy()
+    t["texto"] = texto.reindex(t.index).fillna("") if texto is not None else ""
+    y = {l: rotulo.get(l, l) for l in linhas}
     fig = go.Figure()
-    for tipo in tipos:
+    # faixas alternadas para guiar o olho na linha
+    for n, l in enumerate(linhas):
+        if n % 2 == 0:
+            fig.add_hrect(y0=n - 0.5, y1=n + 0.5, fillcolor="#f7f6f3", line_width=0, layer="below")
+    for tipo in ("intervalo", "deslocamento", "limpeza", "lavação", "checagem"):
         p = t[t.tipo == tipo]
         if p.empty:
             continue
-        ini, fim = p.inicio.astype(int), p.fim.astype(int)
-        rotulo = (p.colaborador if eixo == "banheiro" else p.banheiro).fillna("").astype(str)
+        ini, fim_ = p.inicio.astype(int), p.fim.astype(int)
         fig.add_bar(
-            y=p[eixo], x=(fim - ini).values * 60_000,
+            y=[linhas.index(v) for v in p[eixo]], x=(fim_ - ini).values * 60_000,
             base=(DIA_BASE + pd.to_timedelta(ini.values, unit="m")).strftime("%Y-%m-%d %H:%M"),
-            orientation="h", name=tipo,
-            width=0.36 if tipo == "deslocamento" else 0.7,
-            marker=dict(color=CORES[tipo], line=dict(color="white", width=1),
-                        pattern=dict(shape="/", fgcolor="#cfccc4", size=6) if tipo == "intervalo" else None),
-            customdata=list(zip(ini.map(_hhmm), fim.map(_hhmm), rotulo)),
+            orientation="h", name=tipo, width=0.28 if tipo == "deslocamento" else 0.62,
+            marker=dict(color=CORES[tipo], line=dict(width=0), cornerradius=4,
+                        pattern=dict(shape="/", fgcolor="#d4d1c9", size=7, solidity=0.15) if tipo == "intervalo" else None),
+            text=p.texto if tipo not in ("intervalo", "deslocamento") else None,
+            textposition="inside", insidetextanchor="middle", textangle=0, textfont=dict(color="white", size=11),
+            customdata=list(zip(ini.map(_hhmm), fim_.map(_hhmm), p.get("detalhe", p[eixo]).fillna(""))),
             hovertemplate=f"<b>{tipo}</b> %{{customdata[0]}}–%{{customdata[1]}}<br>%{{customdata[2]}}<extra></extra>",
+            showlegend=tipo != "deslocamento",
         )
-    fig.update_layout(barmode="overlay", barcornerradius=3)
-    fig.update_xaxes(type="date", tickformat="%H:%M", dtick=3_600_000, gridcolor=GRADE)
-    fig.update_yaxes(categoryorder="array", categoryarray=linhas, autorange="reversed", showgrid=False)
-    return _estilo(fig, titulo, max(300, altura_linha * len(linhas) + 110))
+    x0 = DIA_BASE + pd.Timedelta(minutes=inicio)
+    x1 = DIA_BASE + pd.Timedelta(minutes=fim)
+    if resumo:
+        for n, l in enumerate(linhas):
+            fig.add_annotation(x=1.0, xref="paper", xanchor="left", y=n, text=resumo.get(l, ""),
+                               showarrow=False, font=dict(size=12, color=TEXTO_2), xshift=10)
+    fig.update_layout(barmode="overlay", uniformtext=dict(minsize=9, mode="hide"), bargap=0)
+    fig.update_xaxes(type="date", range=[x0, x1], tickformat="%H:%M", dtick=3_600_000, side="top",
+                     gridcolor="#d9d7d0", gridwidth=1,
+                     minor=dict(dtick=900_000, showgrid=True, gridcolor="#eeede9", gridwidth=1))
+    fig.update_yaxes(tickvals=list(range(len(linhas))), ticktext=[y[l] for l in linhas],
+                     range=[len(linhas) - 0.5, -0.5], showgrid=False, ticklabelstandoff=8)
+    fig = _estilo(fig, titulo, 46 * len(linhas) + 110, legenda=False)
+    fig.update_layout(margin=dict(l=8, r=150 if resumo else 8, t=84, b=8))
+    return fig
 
 
-GRADE_TIPOS = ["vazio", "intervalo", "limpeza", "lavação", "checagem"]
-GRADE_CORES = ["#f6f5f2", "#e2e0da", CORES["limpeza"], CORES["lavação"], CORES["checagem"]]
-
-
-def grade_15min(t: pd.DataFrame, eixo: str, titulo: str, inicio: int, fim: int,
-                ordem: list[str] | None = None, altura_linha: int = 34) -> go.Figure:
-    """Grade de blocos de 15 minutos: cada célula mostra o que a linha (banheiro ou colaborador)
-    está fazendo naquele bloco. Cada tarefa entra no bloco em que começa; o intervalo ocupa
-    todos os blocos que cobre. Deslocamento não aparece (fica dentro do bloco)."""
-    t = t[t.tipo.isin(GRADE_TIPOS)]
-    linhas = ordem or list(dict.fromkeys(t[eixo].dropna()))
-    s0 = inicio // 15 * 15
-    blocos = list(range(s0, fim, 15))
-    pos = {r: n for n, r in enumerate(linhas)}
-    z = [[0] * len(blocos) for _ in linhas]
-    dica = [[f"{_hhmm(b)}–{_hhmm(b + 15)}" for b in blocos] for _ in linhas]
-    outro = "colaborador" if eixo == "banheiro" else "banheiro"
-
-    def marcar(r, c, tipo, texto):
-        if 0 <= c < len(blocos):
-            if GRADE_TIPOS.index(tipo) >= z[r][c]:
-                z[r][c] = GRADE_TIPOS.index(tipo)
-            dica[r][c] += f"<br><b>{tipo}</b> {texto}"
-
-    for _, x in t.iterrows():
-        if x[eixo] not in pos:
-            continue
-        r = pos[x[eixo]]
-        texto = f"{_hhmm(x.inicio)}–{_hhmm(x.fim)}"
-        if isinstance(x.get(outro), str) and x[outro]:
-            texto += f" · {x[outro].split('<br>')[0]}"
-        if x.tipo == "intervalo":
-            for c in range((int(x.inicio) - s0) // 15, -(-(int(x.fim) - s0) // 15)):
-                if 0 <= c < len(blocos) and z[r][c] == 0:
-                    z[r][c] = 1
-                    dica[r][c] += f"<br><b>intervalo</b> {texto}"
-            continue
-        c0 = (int(x.inicio) - s0) // 15
-        for c in range(c0, c0 + max(1, round((x.fim - x.inicio) / 15))):
-            marcar(r, c, x.tipo, texto)
-
-    n = len(GRADE_TIPOS)
-    escala = []
-    for k, cor in enumerate(GRADE_CORES):
-        escala += [[k / n, cor], [(k + 1) / n, cor]]
-    fig = go.Figure(go.Heatmap(
-        z=z, x=list(range(len(blocos))), y=linhas, zmin=-0.5, zmax=n - 0.5, colorscale=escala,
-        showscale=False, xgap=1, ygap=3, customdata=dica, hovertemplate="%{customdata}<extra></extra>",
-    ))
-    # linhas mais marcadas a cada hora
-    for c, b in enumerate(blocos):
-        if b % 60 == 0 and c:
-            fig.add_vline(x=c - 0.5, line=dict(color="#bdbab2", width=1))
-    for tipo in ("limpeza", "lavação", "checagem", "intervalo"):
-        if (t.tipo == tipo).any():
-            fig.add_scatter(x=[None], y=[None], mode="markers", name=tipo,
-                            marker=dict(symbol="square", size=12, color=GRADE_CORES[GRADE_TIPOS.index(tipo)]))
-    horas = [c for c, b in enumerate(blocos) if b % 60 == 0]
-    fig.update_xaxes(tickvals=horas, ticktext=[_hhmm(blocos[c]) for c in horas], showgrid=False,
-                     range=[-0.5, len(blocos) - 0.5])
-    fig.update_yaxes(autorange="reversed", showgrid=False)
-    return _estilo(fig, titulo, max(260, altura_linha * len(linhas) + 110))
+def legenda_html(tipos: list[str]) -> str:
+    """Legenda única das cores de tarefa, para ficar acima dos gráficos do plano."""
+    itens = []
+    for tipo in tipos:
+        fundo = ("repeating-linear-gradient(45deg,#e2e0da 0 3px,#f1f0ec 3px 6px)" if tipo == "intervalo"
+                 else CORES[tipo])
+        itens.append(f"<span style='display:inline-flex;align-items:center;gap:6px;margin-right:18px'>"
+                     f"<span style='width:14px;height:14px;border-radius:4px;background:{fundo}'></span>{tipo}</span>")
+    return f"<div style='font-size:14px;color:{TEXTO_2};margin:4px 0 8px'>{''.join(itens)}</div>"

@@ -10,7 +10,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Sem upload, o app abre com os dados de exemplo em `dados_exemplo/`
+Sem upload, o app usa um dos conjuntos de exemplo em `dados_exemplo/` (movimento alto ou moderado)
 (10 banheiros fictícios, setembro/2026).
 
 ## Dados de entrada
